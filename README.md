@@ -6,6 +6,6 @@
 - ping/pong 메시지 흐름 구현 (연결 검증용)
 
 ### Day2
-- 로컬 STOMP 테스트 페이지 추가 (`test.html`)
+- 로컬 STOMP 테스트 페이지 추가 (`chat-test.html`)
 
 ### Day3
