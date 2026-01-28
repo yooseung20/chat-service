@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>STOMP Test</title>
+</head>
+<body>
+<h2>STOMP(WebSocket) 연결 테스트</h2>
+
+<div class="row">
+    <button id="btnConnect">Connect</button>
+    <button id="btnDisconnect" disabled>Disconnect</button>
+</div>
+
+<div class="row">
+    <input id="msg" placeholder="ping payload text" value="hello" />
+    <button id="btnSend" disabled>Send /app/ping</button>
+</div>
+
+<pre id="log"></pre>
+
+<!-- SockJS + STOMPJS (CDN) -->
+<script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7/bundles/stomp.umd.min.js"></script>
+
+<script>
+    const logEl = document.getElementById("log");
+    const btnConnect = document.getElementById("btnConnect");
+    const btnDisconnect = document.getElementById("btnDisconnect");
+    const btnSend = document.getElementById("btnSend");
+    const msgEl = document.getElementById("msg");
+
+    const log = (...args) => {
+        const line = args.map(a => (typeof a === "string" ? a : JSON.stringify(a))).join(" ");
+        logEl.textContent += line + "\n";
+        logEl.scrollTop = logEl.scrollHeight;
+    };
+
+    let client = null;
+    let subscription = null;
+
+    function setUi(connected) {
+        btnConnect.disabled = connected;
+        btnDisconnect.disabled = !connected;
+        btnSend.disabled = !connected;
+    }
+
+    btnConnect.addEventListener("click", () => {
+        const sock = new SockJS("/ws"); // same-origin
+        client = new StompJs.Client({
+            webSocketFactory: () => sock,
+            reconnectDelay: 0,
+            debug: (str) => log("[stomp]", str),
+        });
+
+        client.onConnect = (frame) => {
+            log("[connect] connected:", frame.headers);
+            setUi(true);
+
+            subscription = client.subscribe("/topic/pong", (message) => {
+                try {
+                    log("[recv] /topic/pong", JSON.parse(message.body));
+                } catch (e) {
+                    log("[recv] /topic/pong raw", message.body);
+                }
+            });
+
+            log("[subscribe] /topic/pong");
+        };
+
+        client.onStompError = (frame) => {
+            log("[stomp-error]", frame.headers["message"]);
+            log(frame.body);
+        };
+
+        client.onWebSocketError = (e) => {
+            log("[ws-error]", e && e.message ? e.message : e);
+        };
+
+        client.onDisconnect = () => {
+            log("[disconnect] disconnected");
+            setUi(false);
+        };
+
+        client.activate();
+        log("[connect] activating...");
+    });
+
+    btnDisconnect.addEventListener("click", async () => {
+        if (subscription) {
+            subscription.unsubscribe();
+            subscription = null;
+        }
+        if (client) {
+            await client.deactivate();
+            client = null;
+        }
+        setUi(false);
+        log("[disconnect] done");
+    });
+
+    btnSend.addEventListener("click", () => {
+        const payload = { text: msgEl.value };
+        client.publish({
+            destination: "/app/ping",
+            body: JSON.stringify(payload),
+        });
+        log("[send] /app/ping", payload);
+    });
+
+    setUi(false);
+</script>
+</body>
+</html>
