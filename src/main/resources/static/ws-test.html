@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>WS STOMP Test</title>
+
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+
+    <style>
+        body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 16px; }
+        h3 { margin: 0 0 10px 0; }
+
+        .status { margin: 10px 0 16px; display:flex; align-items:center; gap:10px; }
+        .dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
+        .dot.off { background:#c00; }
+        .dot.on { background:#0a0; }
+        .badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid #ccc; background: #fff; color:#333; }
+        .badge.locked { background:#f2f2f2; border-color:#ddd; color:#555; }
+
+        .row { margin: 10px 0; display: grid; grid-template-columns: 90px 1fr; gap: 10px; align-items: center; }
+        label { color: #333; }
+
+        .field { position: relative; display:flex; align-items:center; gap:10px; }
+        input {
+            padding: 8px 10px;
+            width: 100%;
+            max-width: 420px;
+            border: 1px solid #bbb;
+            border-radius: 8px;
+            outline: none;
+            transition: border-color .15s, background .15s, color .15s;
+        }
+        input:focus:enabled { border-color: #666; }
+
+        /* 비활성 티 확실히 */
+        input:disabled {
+            background: #f1f1f1;
+            color: #666;
+            border-color: #ddd;
+            cursor: not-allowed;
+            padding-left: 34px; /* 🔒 아이콘 공간 */
+        }
+
+        /* 🔒 아이콘 */
+        .lock {
+            position:absolute;
+            left: 10px;
+            font-size: 14px;
+            opacity: 0;
+            pointer-events: none;
+        }
+        .field.locked .lock { opacity: 1; }
+        .field.locked .badge.locked { display:inline-block; }
+        .field .badge.locked { display:none; }
+
+        button {
+            padding: 8px 12px;
+            border: 1px solid #999;
+            border-radius: 10px;
+            background: #f7f7f7;
+            cursor: pointer;
+        }
+        button:hover:enabled { background:#eee; }
+        button:disabled { opacity: .35; cursor: not-allowed; }
+
+        .actions { margin-top: 14px; display:flex; gap:10px; flex-wrap: wrap; }
+        pre { margin-top: 14px; background: #111; color: #0f0; padding: 12px; height: 360px; overflow: auto; border-radius: 10px; }
+
+        .hint { font-size: 12px; color:#666; margin-left: 6px; }
+        .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    </style>
+</head>
+<body>
+<h3>WebSocket / STOMP 테스트</h3>
+
+<div class="status">
+    <span id="statusDot" class="dot off"></span>
+    <span id="statusText" class="badge mono">DISCONNECTED</span>
+    <span class="hint">subscribe: <span class="badge mono">/topic/room.{roomId}</span></span>
+</div>
+
+<div class="row">
+    <label for="roomId">roomId</label>
+    <div class="field" id="fieldRoomId">
+        <span class="lock">🔒</span>
+        <input id="roomId" value="room-1"/>
+        <span class="badge locked mono">LOCKED</span>
+    </div>
+</div>
+
+<div class="row">
+    <label for="sender">sender</label>
+    <div class="field" id="fieldSender">
+        <span class="lock">🔒</span>
+        <input id="sender" value="user-1"/>
+        <span class="badge locked mono">LOCKED</span>
+    </div>
+</div>
+
+<div class="row">
+    <label for="text">text</label>
+    <div class="field">
+        <input id="text" value="hello"/>
+    </div>
+</div>
+
+<div class="actions">
+    <button id="btnConnect" onclick="connect()">Connect</button>
+    <button id="btnSend" onclick="sendMessage()">Send</button>
+    <button id="btnDisconnect" onclick="disconnect()">Disconnect</button>
+</div>
+
+<pre id="log"></pre>
+
+<script>
+    let stompClient = null;
+    let subscription = null;
+
+    function log(msg) {
+        const el = document.getElementById("log");
+        el.textContent += msg + "\n";
+        el.scrollTop = el.scrollHeight;
+    }
+
+    function setStatus(connected) {
+        const dot = document.getElementById("statusDot");
+        const text = document.getElementById("statusText");
+        dot.className = "dot " + (connected ? "on" : "off");
+        text.textContent = connected ? "CONNECTED" : "DISCONNECTED";
+    }
+
+    function setLockedField(fieldId, locked) {
+        const el = document.getElementById(fieldId);
+        if (locked) el.classList.add("locked");
+        else el.classList.remove("locked");
+    }
+
+    function setUiState({ connected }) {
+        // 초기: roomId/sender 활성, connect 활성, text/send/disconnect 비활성
+        // 연결 후: roomId/sender 잠금, connect 비활성, text/send/disconnect 활성
+        document.getElementById("roomId").disabled = connected;
+        document.getElementById("sender").disabled = connected;
+
+        setLockedField("fieldRoomId", connected);
+        setLockedField("fieldSender", connected);
+
+        document.getElementById("btnConnect").disabled = connected;
+
+        document.getElementById("text").disabled = !connected;
+        document.getElementById("btnSend").disabled = !connected;
+        document.getElementById("btnDisconnect").disabled = !connected;
+
+        setStatus(connected);
+    }
+
+    // 초기 상태
+    setUiState({ connected: false });
+
+    function connect() {
+        if (stompClient && stompClient.connected) {
+            log("[warn] already connected");
+            return;
+        }
+
+        const roomId = document.getElementById("roomId").value.trim();
+        const sender = document.getElementById("sender").value.trim();
+
+        if (!roomId) { log("[error] roomId is required"); return; }
+        if (!sender) { log("[error] sender is required"); return; }
+
+        log("[info] connecting...");
+
+        // SockJS endpoint: /ws
+        const socket = new SockJS("/ws");
+        stompClient = Stomp.over(socket);
+        stompClient.debug = null;
+
+        stompClient.connect({}, () => {
+            log("[ok] connected");
+            setUiState({ connected: true });
+            subscribeRoom(roomId);
+            // UX: 연결되면 바로 text에 포커스
+            setTimeout(() => document.getElementById("text").focus(), 0);
+        }, (err) => {
+            log("[error] connect failed: " + JSON.stringify(err));
+            stompClient = null;
+            setUiState({ connected: false });
+        });
+    }
+
+    function subscribeRoom(roomId) {
+        if (!stompClient || !stompClient.connected) {
+            log("[error] not connected");
+            return;
+        }
+
+        if (subscription) {
+            subscription.unsubscribe();
+            subscription = null;
+            log("[info] previous subscription removed");
+        }
+
+        const topic = "/topic/room." + roomId;
+        subscription = stompClient.subscribe(topic, (message) => {
+            log("[recv] " + message.body);
+        });
+
+        log("[ok] subscribed roomId=" + roomId + " topic=" + topic);
+    }
+
+    function sendMessage() {
+        if (!stompClient || !stompClient.connected) {
+            log("[error] not connected");
+            return;
+        }
+
+        const payload = {
+            roomId: document.getElementById("roomId").value.trim(),
+            sender: document.getElementById("sender").value.trim(),
+            text: document.getElementById("text").value
+        };
+
+        stompClient.send("/app/chat.send", {}, JSON.stringify(payload));
+        log("[sent] " + JSON.stringify(payload));
+    }
+
+    function disconnect() {
+        log("[info] disconnecting...");
+
+        try {
+            if (subscription) {
+                subscription.unsubscribe();
+                subscription = null;
+                log("[info] subscription removed");
+            }
+            if (stompClient) {
+                stompClient.disconnect(() => log("[ok] disconnected"));
+            }
+        } catch (e) {
+            log("[warn] disconnect error: " + e);
+        } finally {
+            stompClient = null;
+            setUiState({ connected: false });
+            // UX: 끊으면 roomId로 포커스
+            setTimeout(() => document.getElementById("roomId").focus(), 0);
+        }
+    }
+
+    // Enter로 전송
+    document.getElementById("text").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !document.getElementById("btnSend").disabled) {
+            sendMessage();
+        }
+    });
+</script>
+</body>
+</html>
