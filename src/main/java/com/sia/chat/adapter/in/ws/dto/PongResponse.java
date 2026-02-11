@@ -1,4 +1,4 @@
-package com.sia.chat.ws.dto;
+package com.sia.chat.adapter.in.ws.dto;
 
 public record PongResponse(
 	String text,
